@@ -1,0 +1,587 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: the backbone of a leech extraction tentacle
+
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: leech_tentacle
+    Description: the backbone of a leech extraction tentacle
+    Author: jcubeta@algernon.solutions
+    SpdxLicenseId: GPL-3.0-or-later
+    LicenseUrl: LICENSE.txt
+    ReadmeUrl: README.md
+    Labels: ['serverless', 'algernon', 'leech', 'etl', 'data_mining']
+    HomePageUrl: https://github.com/user1/my-app-project
+    SemanticVersion: 0.0.1
+    SourceCodeUrl: https://github.com/user1/my-app-project
+
+Parameters:
+  IsDev:
+    Type: String
+    Default: 'False'
+    AllowedValues:
+      - 'False'
+      - 'True'
+  LayerArn:
+    Type: String
+    Description: the layer containing the app dependencies
+  TableName:
+    Type: String
+    Description: the name to be applied to the generated Dynamo Table
+  HashKeyName:
+    Type: String
+    Description: the name of the field used as the hash key in the table
+    Default: identifier_stem
+  SortKeyName:
+    Type: String
+    Description: the name of the field used as teh sort key in the table
+    Default: sid_value
+  AlgernonBucketName:
+    Type: String
+    Description: the name of the S3 bucket shared across the application
+    Default: algernonsolutions-leech-prod
+  EventBusName:
+    Type: String
+    Description: the name of the EventBus generated to handle Events
+  StorageAccountId:
+    Type: String
+    Description: the account id of the storage account
+  StorageAccountBusName:
+    Type: String
+    Description: the name of the EventBus used by the storage account
+  OrganizationId:
+    Type: String
+    Description: the ID of the organization in which the Leech operates
+  ApiKeySecretArn:
+    Type: String
+    Description: the ARN of the secret used to store the Google API key
+
+Globals:
+  Function:
+    Runtime: python3.8
+    Tracing: Active
+    MemorySize: 256
+    Layers:
+      - !Ref LayerArn
+    Environment:
+      Variables:
+        DEBUG: !Ref IsDev
+        API_KEY_SECRET_ARN: !Ref ApiKeySecretArn
+        ALGERNON_BUCKET_NAME: !Ref AlgernonBucketName
+        API_TABLE_NAME: !Ref TableName
+        HASH_KEY_NAME: !Ref HashKeyName
+        SORT_KEY_NAME: !Ref SortKeyName
+        QUEUE_URL: !Ref Queue
+        EVENT_BUS_NAME: !Ref EventBus
+
+Resources:
+  ApiHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: toll_booth.handler.serve_api_call
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 300
+      CodeUri: ../src/
+      MemorySize: 256
+      Events:
+        apiPost:
+          Type: Api
+          Properties:
+            Auth:
+              Authorizer: AWS_IAM
+            Path: /{proxy+}
+            Method: post
+        apiGet:
+          Type: Api
+          Properties:
+            Auth:
+              Authorizer: AWS_IAM
+            Path: /{proxy+}
+            Method: get
+  QueueHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: toll_booth.handler.work_queue
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      CodeUri: ../src/
+      MemorySize: 256
+      Events:
+        eventQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt Queue.Arn
+            BatchSize: 10
+            Enabled: false
+  DirectHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: toll_booth.handler.direct_invoke
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 600
+      CodeUri: ../src/
+
+  SfnRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: work_sfn_role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+      Policies:
+        - PolicyName: workSqs
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:SendMessage'
+                Resource: '*'
+        - PolicyName: workSfn
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                  - 'states:DescribeExecution'
+                  - 'states:StopExecution'
+                  - 'events:PutTargets'
+                  - 'events:PutRule'
+                  - 'events:DescribeRule'
+                Resource: '*'
+        - PolicyName: invokeLambda
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource: '*'
+  PublishRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: publish_event_role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+      Policies:
+        - PolicyName: publishEvents
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "events:PutEvents"
+                Resource: !Sub 'arn:aws:events:us-east-1:${StorageAccountId}:event-bus/${StorageAccountBusName}'
+  LambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: work_lambda_role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+      Policies:
+        - PolicyName: workS3
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:Get*'
+                  - 's3:List*'
+                  - 's3:PutObject'
+                  - 's3:PutObjectAcl'
+                Resource: '*'
+        - PolicyName: publishEvents
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'events:PutEvents'
+                Resource: '*'
+        - PolicyName: writeLogs
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'cloudwatch:PutMetricData'
+                Resource: '*'
+        - PolicyName: workDynamo
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:BatchGetItem'
+                  - 'dynamodb:BatchWriteItem'
+                  - 'dynamodb:ListGlobalTables'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:ListTables'
+                  - 'dynamodb:DescribeTable'
+                  - 'dynamodb:ListBackups'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:DescribeTimeToLive'
+                Resource: !GetAtt Table.Arn
+        - PolicyName: readSqs
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:GetQueueAttributes'
+                Resource: '*'
+        - PolicyName: readSecrets
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'secretsmanager:GetSecretValue'
+                Resource: '*'
+        - PolicyName: workStates
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "states:SendTaskSuccess"
+                  - "states:SendTaskFailure"
+                  - "states:SendTaskHeartbeat"
+                Resource: '*'
+        - PolicyName: workXRay
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "xray:PutTraceSegments"
+                  - "xray:PutTelemetryRecords"
+                Resource: '*'
+        - PolicyName: workSqs
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:GetQueueAttributes'
+                  - 'sqs:ChangeMessageVisibilityBatch'
+                  - 'sqs:ChangeMessageVisibility'
+                  - 'sqs:SendMessageBatch'
+                  - 'sqs:SendMessage'
+                Resource: !GetAtt Queue.Arn
+  EventsRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: events_role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - 'events.amazonaws.com'
+      Policies:
+        - PolicyName: send_sqs_message
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:Send*'
+                Resource: '*'
+        - PolicyName: start_machine
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource: '*'
+
+  WineBarrel:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: spurious-wine
+      KmsMasterKeyId: alias/aws/sqs
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: alias/aws/sqs
+      QueueName: spurious-queue
+      VisibilityTimeout: 300
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt WineBarrel.Arn
+        maxReceiveCount: 50
+
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: !Ref SortKeyName
+          AttributeType: S
+        - AttributeName: !Ref HashKeyName
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - KeyType: HASH
+          AttributeName: !Ref HashKeyName
+        - KeyType: RANGE
+          AttributeName: !Ref SortKeyName
+      TableName: !Ref TableName
+
+  EventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Ref EventBusName
+  EventBusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Properties:
+      Action: "events:PutEvents"
+      Principal: "*"
+      EventBusName: !Ref EventBus
+      StatementId: "OrganizationAccess"
+      Condition:
+        Type: "StringEquals"
+        Key: "aws:PrincipalOrgID"
+        Value: !Ref OrganizationId
+  ExtractionInvocationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: listens for cross account calls to invoke a snapshot
+      EventBusName: !Ref EventBus
+      EventPattern:
+        detail-type:
+          - "take_snapshot"
+      Name: extraction_invocation
+      State: ENABLED
+      Targets:
+        - Id: queue_message
+          Arn: !GetAtt Queue.Arn
+          InputPath: $.detail
+  HourlyTimerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: hourly timer to trigger the baseline snapshots of the CredibleWS source
+      ScheduleExpression: rate(1 hour)
+      Name: hourly_timer
+      State: ENABLED
+      Targets:
+        - Id: timer_fn
+          Arn: !GetAtt DirectHandler.Arn
+          Input: '{"path": "/hourly_timer", "payload": {"source_name": "NightRider"}}'
+  PublishExtractedDataRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: invoked to send data cross account to the storage account
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source:
+          - "night_rider"
+        detail-type:
+          - "publish_extracted_data"
+      Name: publish_extracted_data
+      State: ENABLED
+      Targets:
+        - Id: storage_account_bus
+          Arn: !Sub 'arn:aws:events:us-east-1:${StorageAccountId}:event-bus/${StorageAccountBusName}'
+          RoleArn: !GetAtt PublishRole.Arn
+
+  ExtractionMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionString: !Sub
+        - >
+          {
+            "StartAt": "get_configs",
+            "States": {
+              "get_configs": {
+                "Type": "Task",
+                "Parameters": {
+                  "path": "/generate_extraction_config",
+                  "payload": {
+                    "id_source.$": "$$.Execution.Input.id_source",
+                    "source_name.$": "$$.Execution.Input.source_name",
+                    "extraction_type.$": "$$.Execution.Input.extraction_type",
+                    "extraction_parameters.$": "$$.Execution.Input.extraction_parameters"
+                  }
+                },
+                "Resource": "${FnArn}",
+                "ResultPath": "$.configs",
+                "Retry": [ {
+                   "ErrorEquals": [ "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                   "IntervalSeconds": 2,
+                   "MaxAttempts": 6,
+                   "BackoffRate": 2
+                } ],
+                "Catch": [
+                  {
+                    "ErrorEquals": [
+                      "States.ALL"
+                    ],
+                    "ResultPath": "$.error",
+                    "Next": "mark_failed"
+                  }
+                ],
+                "Next": "extract"
+              },
+              "extract": {
+                "Type": "Task",
+                "Resource": "${FnArn}",
+                "Parameters": {
+                  "path": "/execute_extraction",
+                  "payload": {
+                    "extraction_config.$": "$.configs.extraction_config"
+                  }
+                },
+                "ResultPath": "$.extraction",
+                "TimeoutSeconds": 60,
+                 "Catch": [
+                  {
+                    "ErrorEquals": [
+                      "States.ALL"
+                    ],
+                    "ResultPath": "$.error",
+                    "Next": "mark_failed"
+                  }
+                ],
+                "Next": "process_extraction"
+              },
+              "process_extraction": {
+                "Type": "Task",
+                "Parameters": {
+                  "path": "/process_extraction",
+                  "payload": {
+                    "extraction_config.$": "$.configs.extraction_config",
+                    "extracted_data.$": "$.extraction.extracted_data"
+                  }
+                },
+                "Resource": "${FnArn}",
+                "ResultPath": "$.process",
+                "Retry": [
+                  {
+                    "ErrorEquals": ["NoSuchKey"],
+                    "IntervalSeconds": 5,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2
+                  },
+                  {
+                     "ErrorEquals": [ "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                     "IntervalSeconds": 2,
+                     "MaxAttempts": 6,
+                     "BackoffRate": 2
+                  } ],
+                "Catch": [
+                  {
+                    "ErrorEquals": [
+                      "States.ALL"
+                    ],
+                    "ResultPath": "$.error",
+                    "Next": "mark_failed"
+                  }
+                ],
+                "Next": "broadcast_extracted_assets"
+              },
+              "broadcast_extracted_assets": {
+                "Type": "Task",
+                "Parameters": {
+                  "path": "/broadcast_extracted_assets",
+                  "payload": {
+                    "processed_extraction.$": "$.process.processed_extraction"
+                  }
+                },
+                "Resource": "${FnArn}",
+                "ResultPath": "$.broadcast",
+                "Retry": [
+                  {
+                    "ErrorEquals": ["NoSuchKey"],
+                    "IntervalSeconds": 5,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2
+                  },
+                  {
+                     "ErrorEquals": [ "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+                     "IntervalSeconds": 2,
+                     "MaxAttempts": 6,
+                     "BackoffRate": 2
+                  } ],
+                "Catch": [
+                  {
+                    "ErrorEquals": [
+                      "States.ALL"
+                    ],
+                    "ResultPath": "$.error",
+                    "Next": "mark_failed"
+                  }
+                ],
+                "Next": "mark_success"
+              },
+              "fail": {
+               "Type": "Fail"
+              },
+              "mark_failed": {
+                "Type": "Task",
+                "Resource": "${FnArn}",
+                "Parameters": {
+                  "path": "/mark_execution_fail",
+                  "payload": {
+                    "identifier_stem.$": "$$.Execution.Input.identifier_stem",
+                    "execution_id.$": "$$.Execution.Input.execution_id"
+                  }
+                },
+                "Next": "fail"
+              },
+              "mark_success": {
+                "Type": "Task",
+                "Resource": "${FnArn}",
+                "Parameters": {
+                  "path": "/mark_execution_success",
+                  "payload": {
+                    "identifier_stem.$": "$$.Execution.Input.identifier_stem",
+                    "execution_id.$": "$$.Execution.Input.execution_id"
+                  }
+                },
+                "Catch": [
+                  {
+                    "ErrorEquals": [
+                      "States.ALL"
+                    ],
+                    "ResultPath": "$.error",
+                    "Next": "mark_failed"
+                  }
+                ],
+                "End": true
+              }
+            }
+          }
+        - FnArn: !GetAtt DirectHandler.Arn
+      RoleArn: !GetAtt SfnRole.Arn
+      StateMachineName: extractor

@@ -1,0 +1,11 @@
+{
+  "Parameters": {
+    "LayerArn": "arn:aws:lambda:us-east-1:966060799391:layer:moncrief:2",
+    "ApiKeySecretArn": "arn:aws:secretsmanager:us-east-1:309427751091:secret:algernon_night_rider_service_account-ZUDcYA",
+    "OrganizationId": "o-4nf3fow1bx",
+    "TableName": "NightRider",
+    "StorageAccountId": "977029425001",
+    "StorageAccountBusName": "leech_bus",
+    "EventBusName": "leech_bus"
+  }
+}
