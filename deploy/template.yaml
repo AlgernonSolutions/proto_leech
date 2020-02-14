@@ -4,16 +4,16 @@ Description: the backbone of a leech extraction tentacle
 
 Metadata:
   AWS::ServerlessRepo::Application:
-    Name: leech_tentacle
+    Name: LeechTentacle
     Description: the backbone of a leech extraction tentacle
-    Author: jcubeta@algernon.solutions
+    Author: jcubeta
     SpdxLicenseId: GPL-3.0-or-later
     LicenseUrl: LICENSE.txt
     ReadmeUrl: README.md
     Labels: ['serverless', 'algernon', 'leech', 'etl', 'data_mining']
-    HomePageUrl: https://github.com/user1/my-app-project
+    HomePageUrl: https://github.com/AlgernonSolutions/proto_leech
     SemanticVersion: 0.0.1
-    SourceCodeUrl: https://github.com/user1/my-app-project
+    SourceCodeUrl: https://github.com/AlgernonSolutions/proto_leech
 
 Parameters:
   IsDev:
@@ -36,25 +36,33 @@ Parameters:
     Type: String
     Description: the name of the field used as teh sort key in the table
     Default: sid_value
-  AlgernonBucketName:
+  LeechBucketName:
     Type: String
     Description: the name of the S3 bucket shared across the application
     Default: algernonsolutions-leech-prod
-  EventBusName:
-    Type: String
-    Description: the name of the EventBus generated to handle Events
-  StorageAccountId:
+  NucleusAccountId:
     Type: String
     Description: the account id of the storage account
-  StorageAccountBusName:
+  NucleusAccountBusName:
     Type: String
     Description: the name of the EventBus used by the storage account
   OrganizationId:
     Type: String
     Description: the ID of the organization in which the Leech operates
-  ApiKeySecretArn:
+  ExtractionMachineArn:
     Type: String
-    Description: the ARN of the secret used to store the Google API key
+    Description: the ARN of the SFN machine used to perform the actual extraction
+  ExtractionTimeoutSeconds:
+    Type: Number
+    Description: the number of seconds to wait on the extractor before considering it timed out
+    Default: 60
+  ProcessingMachineArn:
+    Type: String
+    Description: the ARN of the SFN machine used to process the extracted data
+  ProcessingTimeoutSeconds:
+    Type: Number
+    Description: the number of seconds to wait on the processor before considering it timed out
+    Default: 60
 
 Globals:
   Function:
@@ -66,15 +74,14 @@ Globals:
     Environment:
       Variables:
         DEBUG: !Ref IsDev
-        API_KEY_SECRET_ARN: !Ref ApiKeySecretArn
-        ALGERNON_BUCKET_NAME: !Ref AlgernonBucketName
+        BUCKET_NAME: !Ref LeechBucketName
         API_TABLE_NAME: !Ref TableName
         HASH_KEY_NAME: !Ref HashKeyName
         SORT_KEY_NAME: !Ref SortKeyName
         QUEUE_URL: !Ref Queue
-        EVENT_BUS_NAME: !Ref EventBus
 
 Resources:
+  # functions
   ApiHandler:
     Type: AWS::Serverless::Function
     Properties:
@@ -121,6 +128,7 @@ Resources:
       Timeout: 600
       CodeUri: ../src/
 
+  # iam roles
   SfnRole:
     Type: 'AWS::IAM::Role'
     Properties:
@@ -183,7 +191,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - "events:PutEvents"
-                Resource: !Sub 'arn:aws:events:us-east-1:${StorageAccountId}:event-bus/${StorageAccountBusName}'
+                Resource: !Sub 'arn:aws:events:us-east-1:${NucleusAccountId}:event-bus/${NucleusAccountBusName}'
   LambdaRole:
     Type: 'AWS::IAM::Role'
     Properties:
@@ -327,6 +335,7 @@ Resources:
                   - 'states:StartExecution'
                 Resource: '*'
 
+  # sqs
   WineBarrel:
     Type: AWS::SQS::Queue
     Properties:
@@ -342,6 +351,7 @@ Resources:
         deadLetterTargetArn: !GetAtt WineBarrel.Arn
         maxReceiveCount: 50
 
+  # dynamo
   Table:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -358,16 +368,12 @@ Resources:
           AttributeName: !Ref SortKeyName
       TableName: !Ref TableName
 
-  EventBus:
-    Type: AWS::Events::EventBus
-    Properties:
-      Name: !Ref EventBusName
+  # event bridge
   EventBusPolicy:
     Type: AWS::Events::EventBusPolicy
     Properties:
       Action: "events:PutEvents"
       Principal: "*"
-      EventBusName: !Ref EventBus
       StatementId: "OrganizationAccess"
       Condition:
         Type: "StringEquals"
@@ -377,7 +383,6 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Description: listens for cross account calls to invoke a snapshot
-      EventBusName: !Ref EventBus
       EventPattern:
         detail-type:
           - "take_snapshot"
@@ -402,7 +407,6 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Description: invoked to send data cross account to the storage account
-      EventBusName: !Ref EventBus
       EventPattern:
         source:
           - "night_rider"
@@ -412,9 +416,10 @@ Resources:
       State: ENABLED
       Targets:
         - Id: storage_account_bus
-          Arn: !Sub 'arn:aws:events:us-east-1:${StorageAccountId}:event-bus/${StorageAccountBusName}'
+          Arn: !Sub 'arn:aws:events:us-east-1:${NucleusAccountId}:event-bus/${NucleusAccountBusName}'
           RoleArn: !GetAtt PublishRole.Arn
 
+  # step functions
   ExtractionMachine:
     Type: AWS::StepFunctions::StateMachine
     Properties:
@@ -455,16 +460,17 @@ Resources:
               },
               "extract": {
                 "Type": "Task",
-                "Resource": "${FnArn}",
+                "Resource": "arn:aws:states:::states:startExecution.sync",
                 "Parameters": {
-                  "path": "/execute_extraction",
-                  "payload": {
-                    "extraction_config.$": "$.configs.extraction_config"
+                  "StateMachineArn": "${ExtractionMachineArn}",
+                  "Input": {
+                    "extraction_config.$": "$.configs.extraction_config",
+                    "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
                   }
                 },
                 "ResultPath": "$.extraction",
-                "TimeoutSeconds": 60,
-                 "Catch": [
+                "TimeoutSeconds": ${ExtractionTimeoutSeconds},
+                "Catch": [
                   {
                     "ErrorEquals": [
                       "States.ALL"
@@ -477,28 +483,17 @@ Resources:
               },
               "process_extraction": {
                 "Type": "Task",
+                "Resource": "arn:aws:states:::states:startExecution.sync",
                 "Parameters": {
-                  "path": "/process_extraction",
-                  "payload": {
+                  "StateMachineArn": "${ProcessingMachineArn}",
+                  "Input": {
                     "extraction_config.$": "$.configs.extraction_config",
                     "extracted_data.$": "$.extraction.extracted_data"
+                    "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
                   }
                 },
-                "Resource": "${FnArn}",
                 "ResultPath": "$.process",
-                "Retry": [
-                  {
-                    "ErrorEquals": ["NoSuchKey"],
-                    "IntervalSeconds": 5,
-                    "MaxAttempts": 3,
-                    "BackoffRate": 2
-                  },
-                  {
-                     "ErrorEquals": [ "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
-                     "IntervalSeconds": 2,
-                     "MaxAttempts": 6,
-                     "BackoffRate": 2
-                  } ],
+                "TimeoutSeconds": ${ProcessingTimeoutSeconds},
                 "Catch": [
                   {
                     "ErrorEquals": [
