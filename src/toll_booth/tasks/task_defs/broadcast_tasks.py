@@ -5,9 +5,8 @@ from typing import Sequence
 import boto3
 import rapidjson
 
-from toll_booth.obj.extraction import ProcessedExtraction, DataAsset
+from leech_tentacle.extraction import ProcessedExtraction, DataAsset
 from toll_booth.obj.troubles import EventPublishFailedException
-from toll_booth.tasks import Config
 
 
 def _publish_batch_extracted_data(

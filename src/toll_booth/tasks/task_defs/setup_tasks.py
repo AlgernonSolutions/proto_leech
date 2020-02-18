@@ -32,7 +32,10 @@ def setup_extraction(
 ):
     if extraction_params is None:
         extraction_params = {}
-    machine_arn = Config.execution_machine_arn
+    machine_arn = Config.extraction_machine_arn
+    if machine_arn is None:
+        raise RuntimeError(f'extraction machine arn is not set, most likely because this task was invoked from the '
+                           f'DirectHandler, which is not allowed')
     extraction_id = uuid.uuid4().hex
     identifier_stem = generate_identifier_stem(
         id_source=id_source,

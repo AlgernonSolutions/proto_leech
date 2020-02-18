@@ -31,22 +31,22 @@ def environment_variable(**kwargs):
     return os.environ[variable_name]
 
 
-def id_source_specific_stored_parameter(**kwargs):
+def _get_parameter(parameter_name: str):
     client = boto3.Session().client('ssm')
-    common_parameters = kwargs['common_parameters']
-    id_source = common_parameters.id_source
-    parameter_name = kwargs['parameter_name']
     response = client.get_parameter(
-        Name=f'{parameter_name}.{id_source}'
+        Name=parameter_name
     )
     parameter_data = response['Parameter']
     return parameter_data['Value']
 
 
+def id_source_specific_stored_parameter(**kwargs):
+    common_parameters = kwargs['common_parameters']
+    id_source = common_parameters.id_source
+    parameter_name = f'{kwargs["parameter_name"]}.{id_source}'
+    return _get_parameter(parameter_name)
+
+
 def stored_parameter(**kwargs):
-    client = boto3.Session().client('ssm')
     parameter_name = kwargs['parameter_name']
-    response = client.get_parameter(
-        Name=parameter_name
-    )
-    return response
+    return _get_parameter(parameter_name)

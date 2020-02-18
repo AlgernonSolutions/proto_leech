@@ -12,7 +12,7 @@ Metadata:
     ReadmeUrl: README.md
     Labels: ['serverless', 'algernon', 'leech', 'etl', 'data_mining']
     HomePageUrl: https://github.com/AlgernonSolutions/proto_leech
-    SemanticVersion: 0.0.1
+    SemanticVersion: 0.7.0
     SourceCodeUrl: https://github.com/AlgernonSolutions/proto_leech
 
 Parameters:
@@ -22,9 +22,6 @@ Parameters:
     AllowedValues:
       - 'False'
       - 'True'
-  LayerArn:
-    Type: String
-    Description: the layer containing the app dependencies
   TableName:
     Type: String
     Description: the name to be applied to the generated Dynamo Table
@@ -70,7 +67,7 @@ Globals:
     Tracing: Active
     MemorySize: 256
     Layers:
-      - !Ref LayerArn
+      - !Ref MoncriefLayer
     Environment:
       Variables:
         DEBUG: !Ref IsDev
@@ -81,6 +78,15 @@ Globals:
         QUEUE_URL: !Ref Queue
 
 Resources:
+  #lambda layer
+  MoncriefLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: moncrief_leech
+      ContentUri: C:\Users\jcubeta\.leech\layers\3\
+      CompatibleRuntimes:
+        - python3.8
+
   # functions
   ApiHandler:
     Type: AWS::Serverless::Function
@@ -90,6 +96,9 @@ Resources:
       Timeout: 300
       CodeUri: ../src/
       MemorySize: 256
+      Environment:
+        Variables:
+          EXTRACTION_MACHINE_ARN: !Ref ExtractionMachine
       Events:
         apiPost:
           Type: Api
@@ -113,6 +122,9 @@ Resources:
       Timeout: 30
       CodeUri: ../src/
       MemorySize: 256
+      Environment:
+        Variables:
+          EXTRACTION_MACHINE_ARN: !Ref ExtractionMachine
       Events:
         eventQueue:
           Type: SQS
@@ -278,6 +290,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
+                  - "states:StartExecution"
                   - "states:SendTaskSuccess"
                   - "states:SendTaskFailure"
                   - "states:SendTaskHeartbeat"
@@ -290,6 +303,14 @@ Resources:
                 Action:
                   - "xray:PutTraceSegments"
                   - "xray:PutTelemetryRecords"
+                Resource: '*'
+        - PolicyName: read_ssm
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ssm:Get*"
                 Resource: '*'
         - PolicyName: workSqs
           PolicyDocument:
@@ -436,7 +457,7 @@ Resources:
                     "id_source.$": "$$.Execution.Input.id_source",
                     "source_name.$": "$$.Execution.Input.source_name",
                     "extraction_type.$": "$$.Execution.Input.extraction_type",
-                    "extraction_parameters.$": "$$.Execution.Input.extraction_parameters"
+                    "extraction_params.$": "$$.Execution.Input.extraction_params"
                   }
                 },
                 "Resource": "${FnArn}",
@@ -488,7 +509,7 @@ Resources:
                   "StateMachineArn": "${ProcessingMachineArn}",
                   "Input": {
                     "extraction_config.$": "$.configs.extraction_config",
-                    "extracted_data.$": "$.extraction.extracted_data"
+                    "extracted_data.$": "$.extraction.extracted_data",
                     "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
                   }
                 },
@@ -580,3 +601,14 @@ Resources:
         - FnArn: !GetAtt DirectHandler.Arn
       RoleArn: !GetAtt SfnRole.Arn
       StateMachineName: extractor
+
+Outputs:
+  LambdaRoleArn:
+    Description: the ARN of the IAM role used by the backbone for Lambda operations
+    Value: !GetAtt LambdaRole.Arn
+  QueueUrl:
+    Description: the URL of the SQS queue used by the backbone
+    Value: !Ref Queue
+  LayerArn:
+    Description: the ARN of the generated lambda layer
+    Value: !Ref MoncriefLayer

@@ -12,7 +12,8 @@ def _build_config() -> ConfigClass:
         table_name=os.environ['API_TABLE_NAME'],
         queue_url=os.environ['QUEUE_URL'],
         hash_key_name=os.environ['HASH_KEY_NAME'],
-        sort_key_name=os.environ['SORT_KEY_NAME']
+        sort_key_name=os.environ['SORT_KEY_NAME'],
+        extraction_machine_arn=os.getenv('EXTRACTION_MACHINE_ARN')
     )
     return config
 
@@ -23,6 +24,7 @@ class ConfigClass(NamedTuple):
     hash_key_name: str
     sort_key_name: str
     queue_url: str
+    extraction_machine_arn: str
 
 
 if Config is 0:

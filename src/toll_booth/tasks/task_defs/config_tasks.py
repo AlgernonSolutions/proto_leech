@@ -1,10 +1,11 @@
 from copy import deepcopy
 from typing import Mapping, Any, Sequence, NamedTuple
 
-from toll_booth.obj.extraction_config import ExtractionConfig
-from toll_booth.obj.extraction_template import TemplateParameters, RuntimeParameter, TemplatePrimitive, \
+from leech_tentacle.extraction_config import ExtractionConfig
+from leech_tentacle.extraction_template import TemplateParameters, RuntimeParameter, TemplatePrimitive, \
     ExtractionTemplate, ParameterSet
-from toll_booth.obj.troubles import UnknownExtractionTypeException
+from leech_tentacle.troubles import UnknownExtractionTypeException
+
 from toll_booth.tasks.task_defs import dynamic_extraction_kwargs
 from toll_booth.tasks.task_defs.json_task import insert_json
 from toll_booth.tasks.task_defs.tracing_tasks import get_table_item
